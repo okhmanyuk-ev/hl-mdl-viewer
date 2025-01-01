@@ -1,14 +1,14 @@
 #include "application.h"
 #include <iostream>
 
-void VectorTransform(const glm::vec3& in1, const glm::mat3x4& in2, glm::vec3& out)
+static void VectorTransform(const glm::vec3& in1, const glm::mat3x4& in2, glm::vec3& out)
 {
 	out[0] = glm::dot(in1, glm::vec3(in2[0])) + in2[0][3];
 	out[1] = glm::dot(in1, glm::vec3(in2[1])) + in2[1][3];
 	out[2] = glm::dot(in1, glm::vec3(in2[2])) + in2[2][3];
 }
 
-void QuaternionMatrix(const glm::quat& q, glm::mat3x4& m)
+static void QuaternionMatrix(const glm::quat& q, glm::mat3x4& m)
 {
 	m[0][0] = 1.0f - 2.0f * q[1] * q[1] - 2.0f * q[2] * q[2];
 	m[1][0] = 2.0f * q[0] * q[1] + 2.0f * q[3] * q[2];
@@ -23,7 +23,7 @@ void QuaternionMatrix(const glm::quat& q, glm::mat3x4& m)
 	m[2][2] = 1.0f - 2.0f * q[0] * q[0] - 2.0f * q[1] * q[1];
 }
 
-void R_ConcatTransforms(const glm::mat3x4& in1, const glm::mat3x4& in2, glm::mat3x4& out)
+static void ConcatTransforms(const glm::mat3x4& in1, const glm::mat3x4& in2, glm::mat3x4& out)
 {
 	out[0][0] = in1[0][0] * in2[0][0] + in1[0][1] * in2[1][0] + in1[0][2] * in2[2][0];
 	out[0][1] = in1[0][0] * in2[0][1] + in1[0][1] * in2[1][1] + in1[0][2] * in2[2][1];
@@ -107,7 +107,7 @@ Application::Application() : Shared::Application("hl_mdl_viewer")
 			pixel[3] = 255;
 		}
 		mTextures[i] = std::make_shared<skygfx::Texture>(image.getWidth(), image.getHeight(),
-			skygfx::Format::Byte4, image.getMemory());
+			skygfx::PixelFormat::RGBA8UNorm, image.getMemory());
 	}
 
 	std::cout << std::endl;
@@ -153,10 +153,22 @@ Application::Application() : Shared::Application("hl_mdl_viewer")
 		{
 			for (float y = -Dimensions.y; y <= Dimensions.y; y += Step)
 			{
-				mGridLineList.push_back({ { x, Y, -Dimensions.x }, Color });
-				mGridLineList.push_back({ { x, Y, Dimensions.x }, Color });
-				mGridLineList.push_back({ { -Dimensions.y, Y, y }, Color });
-				mGridLineList.push_back({ { Dimensions.y, Y, y }, Color });
+				mGridLineList.push_back(skygfx::utils::Mesh::Vertex{
+					.pos = { x, Y, -Dimensions.x },
+					.color = Color
+				});
+				mGridLineList.push_back(skygfx::utils::Mesh::Vertex{
+					.pos = { x, Y, Dimensions.x },
+					.color = Color
+				});
+				mGridLineList.push_back(skygfx::utils::Mesh::Vertex{
+					.pos = { -Dimensions.y, Y, y },
+					.color = Color
+				});
+				mGridLineList.push_back(skygfx::utils::Mesh::Vertex{
+					.pos = { Dimensions.y, Y, y },
+					.color = Color
+				});
 			}
 		}
 	}
@@ -170,21 +182,9 @@ void Application::onFrame()
 
 	auto view = mCamera->getViewMatrix();
 	auto projection = mCamera->getProjectionMatrix();
-	auto model = glm::mat4(1.0f);
+	auto model_matrix = glm::mat4(1.0f);
 
-	model = glm::rotate(model, glm::radians(90.0f), { 1.0f, 0.0f, 0.0f });
-
-	mShader->setProjectionMatrix(projection);
-	mShader->setViewMatrix(view);
-	mShader->setModelMatrix(model);
-
-	RENDERER->setTopology(skygfx::Topology::TriangleList);
-	RENDERER->setViewport(std::nullopt);
-	RENDERER->setScissor(std::nullopt);
-	RENDERER->setSampler(skygfx::Sampler::Linear);
-	RENDERER->setCullMode(skygfx::CullMode::None);
-	RENDERER->setDepthMode(skygfx::DepthMode(skygfx::ComparisonFunc::Less));
-	RENDERER->setShader(mShader);
+	model_matrix = glm::rotate(model_matrix, glm::radians(90.0f), { 1.0f, 0.0f, 0.0f });
 
 	SetUpBones();
 
@@ -206,14 +206,15 @@ void Application::onFrame()
 			//	mVertices[k] = mtx * glm::vec3(pos.x, pos.y, pos.z);
 			}
 
-			static std::vector<Vertex> vao = {};
+			static std::vector<skygfx::utils::Mesh::Vertex> vao = {};
 
 			for (int k = 0; k < model.nummesh; k++)
 			{
 				auto mesh = model.getMesh(header)[k];
 				auto tex = header->getSkinref()[mesh.skinref];
 
-				RENDERER->setTexture(*mTextures.at(tex));
+				//RENDERER->setTexture(*mTextures.at(tex));
+				auto render_texture = mTextures.at(tex);
 
 				auto texture = header->getTexture()[tex];
 
@@ -235,14 +236,14 @@ void Application::onFrame()
 
 					for (; l > 0; l--, tris += 4)
 					{
-						Vertex v;
+						skygfx::utils::Mesh::Vertex v;
 
 						v.pos = mVertices[tris[0]];
 						v.normal = model.getNormal(header)[tris[1]];
 						v.texcoord.x = tris[2] * s;
 						v.texcoord.y = tris[3] * t;
 
-						if (vao.size() >= 3) // make triangulation 
+						if (vao.size() >= 3) // make triangulation
 						{
 							if (fan)
 							{
@@ -267,22 +268,35 @@ void Application::onFrame()
 						vao.push_back(v);
 					}
 
-					RENDERER->setVertexBuffer(vao);
-					RENDERER->draw(vao.size());
+					static skygfx::utils::Mesh mesh;
+					mesh.setVertices(vao);
+
+					skygfx::utils::ExecuteCommands({
+						skygfx::utils::commands::SetProjectionMatrix(projection),
+						skygfx::utils::commands::SetModelMatrix(model_matrix),
+						skygfx::utils::commands::SetViewMatrix(view),
+						skygfx::utils::commands::SetTopology(skygfx::Topology::TriangleList),
+						skygfx::utils::commands::SetDepthMode(skygfx::DepthMode(skygfx::ComparisonFunc::Less)),
+						skygfx::utils::commands::SetMesh(&mesh),
+						skygfx::utils::commands::SetColorTexture(render_texture.get()),
+						skygfx::utils::commands::DrawMesh()
+					});
 				}
 			}
 		}
 	}
 
-	// draw grid
+	static skygfx::utils::Mesh mesh;
+	mesh.setVertices(mGridLineList);
 
-	GRAPHICS->begin();
-	GRAPHICS->pushDepthMode(skygfx::DepthMode(skygfx::ComparisonFunc::Less));
-	GRAPHICS->pushViewMatrix(mCamera->getViewMatrix());
-	GRAPHICS->pushProjectionMatrix(mCamera->getProjectionMatrix());
-	GRAPHICS->draw(skygfx::Topology::LineList, mGridLineList);
-	GRAPHICS->pop(3);
-	GRAPHICS->end();
+	skygfx::utils::ExecuteCommands({
+		skygfx::utils::commands::SetProjectionMatrix(projection),
+		skygfx::utils::commands::SetViewMatrix(view),
+		skygfx::utils::commands::SetTopology(skygfx::Topology::LineList),
+		skygfx::utils::commands::SetDepthMode(skygfx::DepthMode(skygfx::ComparisonFunc::Less)),
+		skygfx::utils::commands::SetMesh(&mesh),
+		skygfx::utils::commands::DrawMesh()
+	});
 }
 
 void Application::showMenu()
@@ -383,7 +397,7 @@ void Application::SetUpBones()
 		}
 		else
 		{
-			R_ConcatTransforms(mBoneMatrices[pbones[i].parent], bonematrix, mBoneMatrices[i]);
+			ConcatTransforms(mBoneMatrices[pbones[i].parent], bonematrix, mBoneMatrices[i]);
 			//mBoneMatrices[i] = mBoneMatrices[pbones[i].parent] * bonematrix;
 		}
 	}
