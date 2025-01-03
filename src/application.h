@@ -18,7 +18,7 @@ private:
 	//std::shared_ptr<Renderer::Shaders::Generic> mShader = std::make_shared<Renderer::Shaders::Generic>(Vertex::Layout);
 
 private:
-	std::shared_ptr<Graphics::Camera3D> mCamera;
+	//std::shared_ptr<Graphics::Camera3D> mCamera;
 	std::shared_ptr<Shared::FirstPersonCameraController> mCameraController;
 
 private:
@@ -34,7 +34,7 @@ private:
 	std::unordered_map<int, std::shared_ptr<skygfx::Texture>> mTextures;
 	glm::vec3 mVertices[MAXSTUDIOVERTS];
 	glm::mat3x4 mBoneMatrices[MAXSTUDIOBONES];
-	std::vector<skygfx::utils::Mesh::Vertex> mGridLineList;
+	//std::vector<skygfx::utils::Mesh::Vertex> mGridLineList;
 
 private:
 	void SetUpBones();

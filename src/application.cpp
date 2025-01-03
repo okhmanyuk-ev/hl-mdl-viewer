@@ -39,17 +39,23 @@ static void ConcatTransforms(const glm::mat3x4& in1, const glm::mat3x4& in2, glm
 	out[2][3] = in1[2][0] * in2[0][3] + in1[2][1] * in2[1][3] + in1[2][2] * in2[2][3] + in1[2][3];
 }
 
-Application::Application() : Shared::Application("hl_mdl_viewer")
+static std::shared_ptr<Scene::Entity3D> gCharacter;
+static std::shared_ptr<Scene::Viewport3D> gViewport;
+
+Application::Application() : Shared::Application("hl_mdl_viewer", { Flag::Scene })
 {
 	CONSOLE->execute("hud_show_fps 1");
 
-	mCamera = std::make_shared<Graphics::Camera3D>();
-	mCamera->setFieldOfView(70.0f);
-	mCamera->setWorldUp({ 0.0f, -1.0f, 0.0f });
-	mCamera->setYaw(glm::radians(90.0f));
-	mCamera->setPosition({ 0.0f, 0.0f, -100.0f });
+	gViewport = std::make_shared<Scene::Viewport3D>();
+	getScene()->getRoot()->attach(gViewport);
 
-	mCameraController = std::make_shared<Shared::FirstPersonCameraController>(mCamera);
+	auto camera = gViewport->getCamera();
+	camera->setFieldOfView(70.0f);
+	camera->setWorldUp({ 0.0f, -1.0f, 0.0f });
+	camera->setYaw(glm::radians(90.0f));
+	camera->setPosition({ 0.0f, 0.0f, -100.0f });
+
+	mCameraController = std::make_shared<Shared::FirstPersonCameraController>(camera);
 	mCameraController->setSensivity(1.0f);
 	mCameraController->setSpeed(1.0f);
 
@@ -142,7 +148,7 @@ Application::Application() : Shared::Application("hl_mdl_viewer")
 	}
 
 	// build grid linelist
-
+	std::vector<skygfx::utils::Mesh::Vertex> grid_vertices;
 	{
 		const glm::vec2 Dimensions = { 1000.0f, 1000.0f };
 		const glm::vec4 Color = { Graphics::Color::White, 0.5f };
@@ -153,150 +159,113 @@ Application::Application() : Shared::Application("hl_mdl_viewer")
 		{
 			for (float y = -Dimensions.y; y <= Dimensions.y; y += Step)
 			{
-				mGridLineList.push_back(skygfx::utils::Mesh::Vertex{
+				grid_vertices.push_back(skygfx::utils::Mesh::Vertex{
 					.pos = { x, Y, -Dimensions.x },
 					.color = Color
 				});
-				mGridLineList.push_back(skygfx::utils::Mesh::Vertex{
+				grid_vertices.push_back(skygfx::utils::Mesh::Vertex{
 					.pos = { x, Y, Dimensions.x },
 					.color = Color
 				});
-				mGridLineList.push_back(skygfx::utils::Mesh::Vertex{
+				grid_vertices.push_back(skygfx::utils::Mesh::Vertex{
 					.pos = { -Dimensions.y, Y, y },
 					.color = Color
 				});
-				mGridLineList.push_back(skygfx::utils::Mesh::Vertex{
+				grid_vertices.push_back(skygfx::utils::Mesh::Vertex{
 					.pos = { Dimensions.y, Y, y },
 					.color = Color
 				});
 			}
 		}
 	}
+
+	auto grid = std::make_shared<Scene::SingleMeshEntity>();
+	grid->setTopology(skygfx::Topology::LineList);
+	grid->setVertices(grid_vertices);
+
+	gViewport->addEntity(grid);
+
+	gCharacter = std::make_shared<Scene::Entity3D>();
+	gCharacter->setRotation({ glm::radians(90.0f), 0.0f, 0.0f });
+	gViewport->addEntity(gCharacter);
+	gCharacter->setProvideModelsCallback([this](std::vector<skygfx::utils::Model>& models) {
+		auto header = m_Model->getHeader();
+
+		auto mesh_index = 0;
+
+		for (int i = 0; i < header->numbodyparts; i++)
+		{
+			auto bodypart = header->getBodypart()[i];
+
+			for (int j = 0; j < bodypart.nummodels; j++)
+			{
+				auto model = bodypart.getModel(header)[j];
+
+				for (int k = 0; k < model.numverts; k++)
+				{
+					auto pos = model.getVertex(header)[k];
+					auto mtx = mBoneMatrices[model.getVertexBoneIndex(header)[k]];
+					VectorTransform(pos, mtx, mVertices[k]);
+				}
+
+				for (int k = 0; k < model.nummesh; k++)
+				{
+					auto mesh = model.getMesh(header)[k];
+					auto tex = header->getSkinref()[mesh.skinref];
+					auto texture = header->getTexture()[tex];
+
+					float s = 1.0f / (float)texture.width;
+					float t = 1.0f / (float)texture.height;
+
+					auto tris = mesh.getTri(header);
+
+					int l = 0;
+
+					skygfx::utils::MeshBuilder mesh_builder;
+
+					while (l = *(tris++))
+					{
+						bool fan = l < 0;
+
+						if (fan)
+							l = -l;
+
+						mesh_builder.begin(fan ? skygfx::utils::MeshBuilder::Mode::TriangleFan : skygfx::utils::MeshBuilder::Mode::TriangleStrip);
+
+						for (; l > 0; l--, tris += 4)
+						{
+							mesh_builder.vertex(skygfx::utils::Mesh::Vertex{
+								.pos = mVertices[tris[0]],
+								.texcoord = { tris[2] * s, tris[3] * t },
+								.normal = model.getNormal(header)[tris[1]]
+							});
+						}
+
+						mesh_builder.end();
+					}
+
+					static std::unordered_map<uint32_t, skygfx::utils::Mesh> meshes;
+					auto& _mesh = meshes[mesh_index];
+					mesh_index++;
+					mesh_builder.setToMesh(_mesh);
+
+					skygfx::utils::Model _model;
+					_model.topology = mesh_builder.getTopology().value();
+					_model.color_texture = mTextures.at(tex).get();
+					_model.mesh = &_mesh;
+					_model.matrix = gCharacter->getTransform();
+					_model.depth_mode = skygfx::DepthMode(skygfx::ComparisonFunc::Less);
+					models.push_back(_model);
+				}
+			}
+		}
+	});
 }
 
 void Application::onFrame()
 {
 	showMenu();
-
-	mCamera->onFrame();
-
-	auto view = mCamera->getViewMatrix();
-	auto projection = mCamera->getProjectionMatrix();
-	auto model_matrix = glm::mat4(1.0f);
-
-	model_matrix = glm::rotate(model_matrix, glm::radians(90.0f), { 1.0f, 0.0f, 0.0f });
-
 	SetUpBones();
-
-	auto header = m_Model->getHeader();
-
-	for (int i = 0; i < header->numbodyparts; i++)
-	{
-		auto bodypart = header->getBodypart()[i];
-
-		for (int j = 0; j < bodypart.nummodels; j++)
-		{
-			auto model = bodypart.getModel(header)[j];
-
-			for (int k = 0; k < model.numverts; k++)
-			{
-				auto pos = model.getVertex(header)[k];
-				auto mtx = mBoneMatrices[model.getVertexBoneIndex(header)[k]];
-				VectorTransform(pos, mtx, mVertices[k]);
-			//	mVertices[k] = mtx * glm::vec3(pos.x, pos.y, pos.z);
-			}
-
-			static std::vector<skygfx::utils::Mesh::Vertex> vao = {};
-
-			for (int k = 0; k < model.nummesh; k++)
-			{
-				auto mesh = model.getMesh(header)[k];
-				auto tex = header->getSkinref()[mesh.skinref];
-
-				//RENDERER->setTexture(*mTextures.at(tex));
-				auto render_texture = mTextures.at(tex);
-
-				auto texture = header->getTexture()[tex];
-
-				float s = 1.0f / (float)texture.width;
-				float t = 1.0f / (float)texture.height;
-
-				auto tris = mesh.getTri(header);
-
-				int l = 0;
-
-				while (l = *(tris++))
-				{
-					bool fan = l < 0;
-
-					if (fan)
-						l = -l;
-
-					vao.clear();
-
-					for (; l > 0; l--, tris += 4)
-					{
-						skygfx::utils::Mesh::Vertex v;
-
-						v.pos = mVertices[tris[0]];
-						v.normal = model.getNormal(header)[tris[1]];
-						v.texcoord.x = tris[2] * s;
-						v.texcoord.y = tris[3] * t;
-
-						if (vao.size() >= 3) // make triangulation
-						{
-							if (fan)
-							{
-								vao.push_back(vao[0]);
-								vao.push_back(vao[vao.size() - 2]);
-							}
-							else
-							{
-								if (vao.size() & 1)
-								{
-									vao.push_back(vao[vao.size() - 1]);
-									vao.push_back(vao[vao.size() - 3]);
-								}
-								else
-								{
-									vao.push_back(vao[vao.size() - 4]);
-									vao.push_back(vao[vao.size() - 2]);
-								}
-							}
-						}
-
-						vao.push_back(v);
-					}
-
-					static skygfx::utils::Mesh mesh;
-					mesh.setVertices(vao);
-
-					skygfx::utils::ExecuteCommands({
-						skygfx::utils::commands::SetProjectionMatrix(projection),
-						skygfx::utils::commands::SetModelMatrix(model_matrix),
-						skygfx::utils::commands::SetViewMatrix(view),
-						skygfx::utils::commands::SetTopology(skygfx::Topology::TriangleList),
-						skygfx::utils::commands::SetDepthMode(skygfx::DepthMode(skygfx::ComparisonFunc::Less)),
-						skygfx::utils::commands::SetMesh(&mesh),
-						skygfx::utils::commands::SetColorTexture(render_texture.get()),
-						skygfx::utils::commands::DrawMesh()
-					});
-				}
-			}
-		}
-	}
-
-	static skygfx::utils::Mesh mesh;
-	mesh.setVertices(mGridLineList);
-
-	skygfx::utils::ExecuteCommands({
-		skygfx::utils::commands::SetProjectionMatrix(projection),
-		skygfx::utils::commands::SetViewMatrix(view),
-		skygfx::utils::commands::SetTopology(skygfx::Topology::LineList),
-		skygfx::utils::commands::SetDepthMode(skygfx::DepthMode(skygfx::ComparisonFunc::Less)),
-		skygfx::utils::commands::SetMesh(&mesh),
-		skygfx::utils::commands::DrawMesh()
-	});
 }
 
 void Application::showMenu()
